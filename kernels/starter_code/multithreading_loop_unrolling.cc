@@ -7,6 +7,7 @@
 
 #include "../matmul.h"
 #include "common.h"
+#define QM_ARM
 struct multithreading_loop_unrolling_thread_args {
     int start, end;
     const struct matmul_params *params;
@@ -55,10 +56,22 @@ static void *multithreading_loop_unrolling_worker_func(void *args) {
                 // process 16 bytes of weigths (128 bit) = 1 block for each of unrolled `col`
                 // intermediate variable to store sum of integer multiplication and accumulation
                 int intermediate_sum0 = 0, intermediate_sum1 = 0, intermediate_sum2 = 0, intermediate_sum3 = 0;
+
+                #define DECODE_AND_ACC(IDX)                                    \
+                do {                                                           \
+                    uint8_t packed = w##IDX##_int4[qj];                        \
+                    signed char w_de_##IDX##_0  = (packed & 0x0F) - 8;         \
+                    signed char w_de_##IDX##_16 = (packed >> 4) - 8;           \
+                    intermediate_sum##IDX += a_int8[qj] * w_de_##IDX##_0;      \
+                    intermediate_sum##IDX += a_int8[qj + 16] * w_de_##IDX##_16;\
+                } while (0)
+
                 for (int qj = 0; qj < 16; qj++) {
                     // TODO: decode a packed byte into two int8 in the range of (-8, 7)
-
-                    // TODO: int8 multiply and accumulate operation
+                    DECODE_AND_ACC(0);
+                    DECODE_AND_ACC(1);
+                    DECODE_AND_ACC(2);
+                    DECODE_AND_ACC(3);
                 }
                 // dequantize the sum into floating point
                 acc0 += (float)intermediate_sum0 * s_a * s_w0;
@@ -131,7 +144,17 @@ void MatmulOperator::mat_mul_multithreading_loop_unrolling(struct matmul_params 
     assert(params->block_size == 32);  // support block size 32 for now
 
     // TODO: Thread creation
+    for (int i = 0; i < num_thread; i++){
+        threads_args[i].start = i * (n / num_thread);
+        threads_args[i].end = (i + 1) * (n / num_thread);
+        threads_args[i].params = params;
+        pthread_create(&thread_pool[i], NULL, multithreading_loop_unrolling_worker_func, &threads_args[i]);
+    }
 
     // TODO: Join threads
+    for (int i = 0; i < num_thread; i++){
+        pthread_join(thread_pool[i], NULL);
+    }
+
 };
 }  // namespace matmul
