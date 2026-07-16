@@ -66,7 +66,17 @@ void MatmulOperator::mat_mul_simd_programming(struct matmul_params *params) {
 
                 // TODO: apply zero_point to weights and convert the range from (0, 15) to (-8, 7)
                 // Hint: using `vsubq_s8` to the lower-half and upper-half vectors of weights
+
+                uint8x16_t w_low_u8 = vandq_u8(w0, mask_low4bit);
+                uint8x16_t w_high_u8 = vshrq_n_u8(w0, 4);
+
+                int8x16_t w_low = vreinterpretq_s8_u8(w_low_u8);
+                int8x16_t w_high = vreinterpretq_s8_u8(w_high_u8);
+
                 const int8x16_t offsets = vdupq_n_s8(8);
+
+                w_low = vsubq_s8(w_low, offsets);
+                w_high = vsubq_s8(w_high, offsets);
 
                 // load 32 8-bit activation
                 const int8x16_t a0 = vld1q_s8(a_start);
@@ -78,9 +88,22 @@ void MatmulOperator::mat_mul_simd_programming(struct matmul_params *params) {
                 // int32x4 vector to store intermediate sum
                 int32x4_t int_sum0;
 
+                int_sum0 = vdotq_s32(
+                    vdupq_n_s32(0),
+                    a0,
+                    w_low
+                );
+
+                int_sum0 = vdotq_s32(
+                    int_sum0,
+                    a1,
+                    w_high
+                );
+
                 float s_0 = *s_a++ * *s_w++;
                 sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(int_sum0), s_0);
             }
+
             C->data_ptr[row * n + col] = vaddvq_f32(sumv0);
 #endif
 #ifdef QM_x86
