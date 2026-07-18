@@ -14,6 +14,29 @@
 #ifdef QM_x86
 #include <immintrin.h>
 #endif
+
+
+#define DOT_INT4(idx, a0, a1)                     \
+    int_sum##idx = vdotq_s32(                     \
+        vdupq_n_s32(0),                           \
+        a0,                                       \
+        w##idx##_low                              \
+    );                                            \
+    int_sum##idx = vdotq_s32(                     \
+        int_sum##idx,                             \
+        a1,                                       \
+        w##idx##_high                             \
+    )
+
+#define UNPACK_INT4(idx)                                                           \
+                uint8x16_t w##idx##_low_u8 = vandq_u8(w##idx, mask_low4bit);       \
+                uint8x16_t w##idx##_high_u8 = vshrq_n_u8(w##idx, 4);               \
+                int8x16_t w##idx##_low = vreinterpretq_s8_u8(w##idx##_low_u8);     \
+                int8x16_t w##idx##_high = vreinterpretq_s8_u8(w##idx##_high_u8);   \
+                w##idx##_low = vsubq_s8(w##idx##_low, offsets);                    \
+                w##idx##_high = vsubq_s8(w##idx##_high, offsets)
+
+
 struct w4a8_thread_args {
     int start_j, end_j;
     const struct matmul_params *params;
@@ -71,6 +94,11 @@ static void *all_techniques_worker_func(void *args) {
                 // Hint: using `vsubq_s8` to the lower-half and upper-half vectors of weights
                 const int8x16_t offsets = vdupq_n_s8(8);
 
+                UNPACK_INT4(0);
+                UNPACK_INT4(1);
+                UNPACK_INT4(2);
+                UNPACK_INT4(3);
+
                 // load 128 8-bit activation
                 const int8x16_t a0 = vld1q_s8(a_start);
                 const int8x16_t a1 = vld1q_s8(a_start + 16);
@@ -85,6 +113,11 @@ static void *all_techniques_worker_func(void *args) {
                 // TODO: perform dot product and store the result into the intermediate sum, int_sum0
                 // Hint: use `vdotq_s32` and store the sum for each block in int_sum{0-3}
                 int32x4_t int_sum0, int_sum1, int_sum2, int_sum3;
+
+                DOT_INT4(0, a0, a1);
+                DOT_INT4(1, a2, a3);
+                DOT_INT4(2, a4, a5);
+                DOT_INT4(3, a6, a7);
 
                 float s_0 = *s_a++ * *s_w++;
                 float s_1 = *s_a++ * *s_w++;
@@ -222,7 +255,16 @@ void MatmulOperator::mat_mul_all_techniques(struct matmul_params *params) {
     assert(params->block_size == 32);  // support block size 32 for now
 
     // TODO: Thread creation
+    for(int i = 0; i < num_thread; i++){
+        threads_args[i].start_j = i * (C->column / num_thread);
+        threads_args[i].end_j = (i + 1) * (C->column / num_thread);
+        threads_args[i].params = params;
+        pthread_create(&thread_pool[i], NULL, all_techniques_worker_func, &threads_args[i]);
+    }
 
     // TODO: Join threads
+    for(int i = 0; i < num_thread; i++){
+        pthread_join(thread_pool[i], NULL);
+    }
 };
 }  // namespace matmul
